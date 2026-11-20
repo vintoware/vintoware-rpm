@@ -1,0 +1,198 @@
+name: Update, build and publish
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  push:
+    branches: [main]
+    paths: ["packages/**", "scripts/**", ".github/workflows/**"]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Package directory to rebuild even though its version is already released"
+        type: string
+        default: ""
+      republish:
+        description: "Rebuild the dnf repository site even when nothing new was built"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vintoware-rpm
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      ref: ${{ steps.commit.outputs.ref }}
+      hook_failures: ${{ steps.hooks.outputs.failures }}
+    steps:
+      - name: Install tools
+        run: dnf install -y --setopt=install_weak_deps=False git-core python3 minisign rpm-build
+
+      - uses: actions/checkout@v4
+
+      - name: Run package update hooks
+        id: hooks
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          failures=""
+          for hook in packages/*/update; do
+            [ -x "$hook" ] || continue
+            echo "::group::$hook"
+            if ! "$hook"; then
+              echo "::error::$hook failed"
+              git checkout -- "$(dirname "$hook")"
+              failures="$failures $(basename "$(dirname "$hook")")"
+            fi
+            echo "::endgroup::"
+          done
+          echo "failures=${failures# }" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bumps
+        id: commit
+        run: |
+          if ! git diff --quiet; then
+            message=$(for spec in $(git diff --name-only -- 'packages/*/*.spec'); do
+              rpmspec -q --srpm --qf 'Update %{name} to %{version}\n' "$spec"
+            done)
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -a -m "${message:-Update packages}"
+            git push
+          fi
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Plan builds
+        id: plan
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -- ; [ -n "$FORCE" ] && set -- --force "$FORCE"
+          matrix=$(git ls-remote --tags origin | python3 scripts/plan.py "$@")
+          echo "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: fromJSON(needs.check.outputs.matrix).include[0] != null
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.check.outputs.matrix) }}
+    name: build ${{ matrix.name }} ${{ matrix.evr }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: registry.fedoraproject.org/fedora:latest
+    env:
+      PKG: ${{ matrix.package }}
+    steps:
+      - name: Install tools
+        run: dnf install -y --setopt=install_weak_deps=False git-core rpm-build rpmdevtools rpm-sign gnupg2 dnf5-plugins
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.ref }}
+
+      - name: Build
+        run: |
+          spec="packages/$PKG/$PKG.spec"
+          dnf builddep -y "$spec"
+          spectool -g -C "packages/$PKG" "$spec"
+          rpmbuild -bb --define "_sourcedir $PWD/packages/$PKG" --define "_rpmdir $PWD/out" "$spec"
+
+      - name: Sign
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_FINGERPRINT: ${{ vars.GPG_FINGERPRINT }}
+        run: |
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          rpmsign --addsign --define "_gpg_name $GPG_FINGERPRINT" out/*/*.rpm
+          gpg --armor --export "$GPG_FINGERPRINT" > key.asc
+          rpm --import key.asc
+          rpm -K out/*/*.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.package }}-${{ matrix.arch }}
+          path: out/*/*.rpm
+          if-no-files-found: error
+
+  publish:
+    needs: [check, build]
+    if: >-
+      always() && needs.check.result == 'success' &&
+      (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.republish))
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      MATRIX: ${{ needs.check.outputs.matrix }}
+      REF: ${{ needs.check.outputs.ref }}
+    steps:
+      - name: Install tools
+        run: dnf install -y --setopt=install_weak_deps=False git-core gh jq rpm createrepo_c gnupg2 tar gzip
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.ref }}
+
+      - uses: actions/download-artifact@v4
+        if: needs.build.result == 'success'
+        with:
+          pattern: rpm-*
+          path: new
+
+      - name: Create GitHub releases
+        if: needs.build.result == 'success'
+        run: |
+          jq -r '.include | unique_by(.package)[] | "\(.package) \(.name) \(.evr)"' <<<"$MATRIX" |
+          while read -r package name evr; do
+            tag="$name/$evr"
+            files=$(find new -path "new/rpm-$package-*" -name '*.rpm' | sort)
+            notes=$(rpm -qp --changelog $(echo "$files" | head -n 1) | awk 'NR > 1 && /^\*/ { exit } { print }')
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release delete "$tag" --cleanup-tag --yes
+            fi
+            gh release create "$tag" --target "$REF" --title "$name $evr" --notes "$notes" $files
+          done
+
+      - name: Assemble repository
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_FINGERPRINT: ${{ vars.GPG_FINGERPRINT }}
+        run: |
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          scripts/collect-rpms.sh rpms 3
+          scripts/build-site.sh site rpms "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  hooks:
+    needs: check
+    if: needs.check.outputs.hook_failures != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          echo "::error::Update hooks failed for: ${{ needs.check.outputs.hook_failures }}"
+          exit 1

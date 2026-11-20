@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Bump superwhisper.spec to the version in Superwhisper's stable channel.
+
+Package update hook: run from any directory; paths default to this package's
+directory. The repository workflow runs every packages/*/update.
+
+Reads https://tux.superwhisper.com/stable.json. When it names a newer version
+than the spec, downloads each architecture's archive, checks its size and
+SHA-256 against the channel metadata and its minisign signature against the
+pinned upstream release key, then rewrites the spec (version, URLs, checksums,
+Release reset to 1, a new %changelog entry).
+
+Exits non-zero on any verification failure, leaving the spec untouched.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+CHANNEL_URL = "https://tux.superwhisper.com/stable.json"
+ARCHES = ("x86_64", "aarch64")
+ALLOWED_HOST = "https://tux.superwhisper.com/"
+USER_AGENT = "vintoware-rpm-update-check"
+CHANGELOG_AUTHOR = "vintoware-rpm bot <noreply@github.com>"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def fetch(url, dest=None):
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        if dest is None:
+            return response.read()
+        with open(dest, "wb") as out:
+            while chunk := response.read(1 << 20):
+                out.write(chunk)
+    return None
+
+
+def version_key(version):
+    # Stable releases are plain dotted numbers; anything else sorts as unknown.
+    if not re.fullmatch(r"\d+(\.\d+)*", version):
+        raise SystemExit(f"unexpected stable version format: {version!r}")
+    return tuple(int(part) for part in version.split("."))
+
+
+def spec_global(spec, name):
+    match = re.search(rf"^%global {name} (\S+)$", spec, re.M)
+    if not match:
+        raise SystemExit(f"spec has no %global {name}")
+    return match.group(1)
+
+
+def set_global(spec, name, value):
+    return re.sub(rf"^(%global {name} )\S+$", lambda m: m.group(1) + value, spec, count=1, flags=re.M)
+
+
+def verify_artifact(arch, artifact, key, workdir):
+    for field in ("url", "sha256", "size", "signature"):
+        if field not in artifact:
+            raise SystemExit(f"{arch}: channel metadata lacks {field!r}")
+    for field in ("url", "signature"):
+        if not artifact[field].startswith(ALLOWED_HOST):
+            raise SystemExit(f"{arch}: {field} is not on {ALLOWED_HOST}: {artifact[field]}")
+    if not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
+        raise SystemExit(f"{arch}: malformed sha256")
+
+    archive = os.path.join(workdir, os.path.basename(artifact["url"]))
+    signature = archive + ".minisig"
+    print(f"{arch}: downloading {artifact['url']}", flush=True)
+    fetch(artifact["url"], archive)
+    fetch(artifact["signature"], signature)
+
+    size = os.path.getsize(archive)
+    if size != artifact["size"]:
+        raise SystemExit(f"{arch}: size {size} != {artifact['size']}")
+    digest = hashlib.sha256()
+    with open(archive, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    if digest.hexdigest() != artifact["sha256"]:
+        raise SystemExit(f"{arch}: sha256 mismatch")
+    subprocess.run(["minisign", "-V", "-q", "-p", key, "-m", archive, "-x", signature], check=True)
+    print(f"{arch}: size, sha256 and minisign signature OK", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--spec", default=os.path.join(HERE, "superwhisper.spec"))
+    parser.add_argument("--key", default=os.path.join(HERE, "superwhisper-release.pub"))
+    parser.add_argument("--channel", default=CHANNEL_URL)
+    args = parser.parse_args()
+
+    with open(args.spec) as f:
+        spec = f.read()
+    current = spec_global(spec, "sw_version")
+
+    channel = json.loads(fetch(args.channel))
+    if channel.get("schema") != 1:
+        raise SystemExit(f"unsupported channel schema: {channel.get('schema')!r}")
+    latest = channel["version"]
+    print(f"spec: {current}  stable channel: {latest}")
+
+    changed = version_key(latest) > version_key(current)
+    if changed:
+        artifacts = channel.get("artifacts", {})
+        with tempfile.TemporaryDirectory() as workdir:
+            for arch in ARCHES:
+                if arch not in artifacts:
+                    raise SystemExit(f"stable {latest} has no {arch} archive")
+                verify_artifact(arch, artifacts[arch], args.key, workdir)
+
+        spec = set_global(spec, "sw_version", latest)
+        for arch in ARCHES:
+            spec = set_global(spec, f"url_{arch}", artifacts[arch]["url"])
+            spec = set_global(spec, f"sha256_{arch}", artifacts[arch]["sha256"])
+        spec = re.sub(r"^(Release:\s+)\S+$", r"\g<1>1", spec, count=1, flags=re.M)
+
+        date = datetime.datetime.now(datetime.timezone.utc).strftime("%a %b %d %Y")
+        entry = f"* {date} {CHANGELOG_AUTHOR} - {latest}-1\n- Update to {latest}\n"
+        notes = channel.get("notesUrl", "")
+        if re.fullmatch(r"https://github\.com/[\w./-]+", notes):
+            entry += f"- Release notes: {notes}\n"
+        spec = spec.replace("%changelog\n", f"%changelog\n{entry}\n", 1)
+
+        with open(args.spec, "w") as f:
+            f.write(spec)
+        print(f"spec updated to {latest}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

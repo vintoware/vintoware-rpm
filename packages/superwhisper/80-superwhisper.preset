@@ -1,0 +1,3 @@
+# Start Superwhisper with every graphical session (users can opt out with
+# `systemctl --user disable superwhisper.service`).
+enable superwhisper.service

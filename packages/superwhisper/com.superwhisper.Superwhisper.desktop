@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Superwhisper
+Comment=Fast local and cloud dictation
+Exec=superwhisper settings --window
+Icon=superwhisper
+Terminal=false
+StartupWMClass=com.superwhisper.Superwhisper
+Categories=Utility;Accessibility;
