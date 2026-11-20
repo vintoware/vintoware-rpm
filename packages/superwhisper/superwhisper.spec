@@ -24,7 +24,7 @@
 
 Name:           superwhisper
 Version:        %{sw_version}
-Release:        1
+Release:        2
 Summary:        Fast local and cloud dictation (unofficial repackage)
 License:        LicenseRef-Proprietary
 URL:            https://superwhisper.com
@@ -81,6 +81,8 @@ Recommends:     mesa-vulkan-drivers
 Recommends:     wtype
 Suggests:       fcitx5
 %{?systemd_requires}
+Requires(post): coreutils
+Requires(post): glibc-common
 
 %description
 Superwhisper turns speech into text with local (Vulkan) or cloud
@@ -138,6 +140,19 @@ test -L %{buildroot}%{appdir}/lib/libonnxruntime.so
 
 %post
 %systemd_user_post superwhisper.service
+# Like upstream's installer, start the daemon in graphical sessions that are
+# already running; the preset alone only takes effect at the next login. Users
+# who disabled the service are left alone; starting a running one is a no-op.
+if [ -d /run/systemd/system ]; then
+  for unit in $(systemctl list-units --type=service --state=active --plain --no-legend 'user@*.service' 2>/dev/null | awk '{print $1}'); do
+    uid=${unit#user@}; uid=${uid%%.service}
+    user=$(getent passwd "$uid" | cut -d: -f1)
+    [ -n "$user" ] || continue
+    timeout 10 systemctl --user -M "$user@" --quiet is-active graphical-session.target 2>/dev/null || continue
+    timeout 10 systemctl --user -M "$user@" --quiet is-enabled superwhisper.service 2>/dev/null || continue
+    timeout 10 systemctl --user -M "$user@" --no-block start superwhisper.service 2>/dev/null || :
+  done
+fi
 
 %preun
 %systemd_user_preun superwhisper.service
@@ -162,6 +177,9 @@ test -L %{buildroot}%{appdir}/lib/libonnxruntime.so
 %{_datadir}/fcitx5/addon/superwhisper.conf
 
 %changelog
+* Fri Nov 20 2026 vintoware-rpm bot <noreply@github.com> - 1.3.1-2
+- Start the user service in running graphical sessions on install and upgrade
+
 * Fri Nov 20 2026 vintoware-rpm bot <noreply@github.com> - 1.3.1-1
 - Initial package of Superwhisper 1.3.1
 - Release notes: https://github.com/superultrainc/superwhisper-linux-releases/releases/tag/v1.3.1
