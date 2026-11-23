@@ -8,9 +8,15 @@
 
 %global applet_id com.vintoware.grayjaylink
 
+# Don't clamp file mtimes to the changelog date. Qt's QML disk cache treats a
+# source file as unchanged when its mtime is unchanged, and every release made on
+# the same day would otherwise get the same (midnight) mtime -- plasmashell then
+# keeps running the previous widget's cached QML after an upgrade.
+%global clamp_mtime_to_source_date_epoch 0
+
 Name:           grayjay-link
 Version:        0.4.0
-Release:        1
+Release:        2
 Summary:        Open YouTube, Twitch and other links in Grayjay Desktop
 License:        MIT
 URL:            https://github.com/vintoware/grayjay-link
@@ -88,6 +94,9 @@ PYTHONPATH=%{buildroot}%{python3_sitelib} python3 -P -m grayjay_link --version |
 %{_datadir}/applications/grayjay-link-*.desktop
 
 %changelog
+* Mon Nov 23 2026 vintoware <141831576+vintoware@users.noreply.github.com> - 0.4.0-2
+- Keep real file mtimes so plasmashell recompiles the widget's QML after upgrades
+
 * Mon Nov 23 2026 vintoware-rpm bot <noreply@github.com> - 0.4.0-1
 - Update to 0.4.0
 - Release notes: https://github.com/vintoware/grayjay-link/releases/tag/v0.4.0
