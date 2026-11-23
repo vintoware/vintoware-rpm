@@ -17,9 +17,15 @@ shopt -s nullglob globstar
 found=0
 for rpm in "$rpms"/**/*.rpm; do
   arch=$(rpm -qp --qf '%{ARCH}' "$rpm" 2>/dev/null)
-  case "$arch" in x86_64|aarch64) ;; *) echo "skipping $rpm ($arch)" >&2; continue ;; esac
-  mkdir -p "$site/$arch"
-  cp "$rpm" "$site/$arch/"
+  case "$arch" in
+    x86_64|aarch64) arches=("$arch") ;;
+    noarch) arches=(x86_64 aarch64) ;;   # built once, served to both architectures
+    *) echo "skipping $rpm ($arch)" >&2; continue ;;
+  esac
+  for a in "${arches[@]}"; do
+    mkdir -p "$site/$a"
+    cp "$rpm" "$site/$a/"
+  done
   found=$((found + 1))
 done
 ((found)) || { echo "no RPMs found in $rpms" >&2; exit 1; }

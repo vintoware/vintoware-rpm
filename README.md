@@ -46,7 +46,7 @@ Create `packages/<name>/` containing:
 
 - `<name>.spec`. It can use remote `SourceN:` URLs, which are fetched with `spectool`.
   Local sources sit next to the spec. Builds run on x86_64 and aarch64 unless the spec
-  sets `ExclusiveArch`. `BuildArch: noarch` builds once.
+  sets `ExclusiveArch`. `BuildArch: noarch` builds once and is published for both architectures.
 - optionally, an executable `update` that rewrites the spec when upstream has a new
   version. It must exit non-zero if it can't verify what it downloaded. See
   `packages/superwhisper/update`. The check job has `minisign` and `cosign` available,
