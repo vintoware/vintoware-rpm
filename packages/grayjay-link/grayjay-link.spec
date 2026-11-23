@@ -3,13 +3,13 @@
 # verifies the Sigstore-signed checksums.txt -- edit by hand only for packaging
 # fixes (and bump Release when you do). grayjay-link's release workflow runs that
 # hook and pushes the result, so new releases build right away.
-%global src_sha256 2315dfc5ea7371fed95f77ac8ca1a39d4286ec8fd073a13fc2c60c2efd4bf67f
-%global commit 278257d97b689877af1fef36d1ae272aee7e966f
+%global src_sha256 90c1d8f64db48e6c64cdbd1898578347ce179bedf0b2c49012a62d27c2f7a09a
+%global commit 9f8f1c6856423a1867f949fe13fdb37dc1730afd
 
 %global applet_id com.vintoware.grayjaylink
 
 Name:           grayjay-link
-Version:        0.3.1
+Version:        0.4.0
 Release:        1
 Summary:        Open YouTube, Twitch and other links in Grayjay Desktop
 License:        MIT
@@ -88,6 +88,10 @@ PYTHONPATH=%{buildroot}%{python3_sitelib} python3 -P -m grayjay_link --version |
 %{_datadir}/applications/grayjay-link-*.desktop
 
 %changelog
+* Mon Nov 23 2026 vintoware-rpm bot <noreply@github.com> - 0.4.0-1
+- Update to 0.4.0
+- Release notes: https://github.com/vintoware/grayjay-link/releases/tag/v0.4.0
+
 * Mon Nov 23 2026 vintoware-rpm bot <noreply@github.com> - 0.3.1-1
 - Update to 0.3.1
 - Release notes: https://github.com/vintoware/grayjay-link/releases/tag/v0.3.1
