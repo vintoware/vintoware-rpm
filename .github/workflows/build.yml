@@ -191,6 +191,9 @@ jobs:
 
   deploy:
     needs: publish
+    # Explicit: the implicit success() is false whenever an upstream job (build) was
+    # skipped, which made `republish` runs assemble the site but never deploy it.
+    if: always() && needs.publish.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       pages: write
