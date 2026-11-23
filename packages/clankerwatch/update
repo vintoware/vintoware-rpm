@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Bump clankerwatch.spec to upstream's latest GitHub release.
+
+Package update hook: run from any directory; paths default to this package's
+directory. The repository workflow runs every packages/*/update.
+
+Asks the GitHub API for nicholas-fedor/clankerwatch's latest release. When its
+tag is newer than the spec's Version, downloads checksums.txt, its Sigstore
+bundle (checksums.txt.sig) and clankerwatch.src.tar.gz, then:
+
+- verifies the bundle with cosign: the certificate must come from a GitHub
+  Actions workflow in the upstream repository, running for that exact tag;
+- checks the source archive's SHA-256 against the signed checksums.txt;
+
+and only then rewrites the spec (Version, src_sha256, commit, Release reset to
+1, a new %changelog entry).
+
+Needs `cosign` on PATH (or $COSIGN). Uses $GITHUB_TOKEN / $GH_TOKEN for the API
+when set. Exits non-zero on any verification failure, leaving the spec untouched.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+REPO = "nicholas-fedor/clankerwatch"
+API = f"https://api.github.com/repos/{REPO}"
+DOWNLOAD = f"https://github.com/{REPO}/releases/download"
+SOURCE = "clankerwatch.src.tar.gz"
+OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+USER_AGENT = "vintoware-rpm-update-check"
+CHANGELOG_AUTHOR = "vintoware-rpm bot <noreply@github.com>"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def fetch(url, dest=None, api=False):
+    headers = {"User-Agent": USER_AGENT}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if api:
+        headers["Accept"] = "application/vnd.github+json"
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=120) as response:
+        if dest is None:
+            return response.read()
+        with open(dest, "wb") as out:
+            while chunk := response.read(1 << 20):
+                out.write(chunk)
+    return None
+
+
+def version_key(version):
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise SystemExit(f"unexpected version format: {version!r}")
+    return tuple(int(part) for part in version.split("."))
+
+
+def spec_field(spec, pattern, what):
+    match = re.search(pattern, spec, re.M)
+    if not match:
+        raise SystemExit(f"spec has no {what}")
+    return match.group(1)
+
+
+def set_global(spec, name, value):
+    return re.sub(rf"^(%global {name} )\S+$", lambda m: m.group(1) + value, spec, count=1, flags=re.M)
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_release(tag, cosign, workdir):
+    paths = {}
+    for name in ("checksums.txt", "checksums.txt.sig", SOURCE):
+        paths[name] = os.path.join(workdir, name)
+        print(f"downloading {DOWNLOAD}/{tag}/{name}", flush=True)
+        fetch(f"{DOWNLOAD}/{tag}/{name}", paths[name])
+
+    identity = rf"^https://github\.com/{re.escape(REPO)}/\.github/workflows/[\w.-]+@refs/tags/{re.escape(tag)}$"
+    subprocess.run(
+        [cosign, "verify-blob",
+         "--bundle", paths["checksums.txt.sig"],
+         "--certificate-identity-regexp", identity,
+         "--certificate-oidc-issuer", OIDC_ISSUER,
+         paths["checksums.txt"]],
+        check=True,
+    )
+    print("checksums.txt: Sigstore signature OK", flush=True)
+
+    expected = None
+    with open(paths["checksums.txt"]) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == SOURCE:
+                expected = parts[0]
+    if not expected or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise SystemExit(f"checksums.txt has no valid entry for {SOURCE}")
+    if sha256_of(paths[SOURCE]) != expected:
+        raise SystemExit(f"{SOURCE}: sha256 mismatch")
+    print(f"{SOURCE}: sha256 OK", flush=True)
+    return expected
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--spec", default=os.path.join(HERE, "clankerwatch.spec"))
+    parser.add_argument("--cosign", default=os.environ.get("COSIGN", "cosign"))
+    args = parser.parse_args()
+
+    with open(args.spec) as f:
+        spec = f.read()
+    current = spec_field(spec, r"^Version:\s+(\S+)$", "Version")
+
+    release = json.loads(fetch(f"{API}/releases/latest", api=True))
+    tag = release["tag_name"]
+    if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+        raise SystemExit(f"unexpected release tag: {tag!r}")
+    latest = tag[1:]
+    print(f"spec: {current}  latest release: {latest}")
+
+    if version_key(latest) > version_key(current):
+        cosign = shutil.which(args.cosign)
+        if not cosign:
+            raise SystemExit("cosign not found; cannot verify the release")
+        commit = json.loads(fetch(f"{API}/commits/{tag}", api=True))["sha"]
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SystemExit(f"malformed commit sha for {tag}: {commit!r}")
+        with tempfile.TemporaryDirectory() as workdir:
+            src_sha256 = verify_release(tag, cosign, workdir)
+
+        spec = re.sub(r"^(Version:\s+)\S+$", rf"\g<1>{latest}", spec, count=1, flags=re.M)
+        spec = re.sub(r"^(Release:\s+)\S+$", r"\g<1>1", spec, count=1, flags=re.M)
+        spec = set_global(spec, "src_sha256", src_sha256)
+        spec = set_global(spec, "commit", commit)
+
+        date = datetime.datetime.now(datetime.timezone.utc).strftime("%a %b %d %Y")
+        entry = (f"* {date} {CHANGELOG_AUTHOR} - {latest}-1\n- Update to {latest}\n"
+                 f"- Release notes: https://github.com/{REPO}/releases/tag/{tag}\n")
+        spec = spec.replace("%changelog\n", f"%changelog\n{entry}\n", 1)
+
+        with open(args.spec, "w") as f:
+            f.write(spec)
+        print(f"spec updated to {latest}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

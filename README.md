@@ -6,12 +6,13 @@ RPMs, then publishes them on GitHub Pages at <https://vintoware.github.io/vintow
 | Package | Upstream | Updates |
 |---|---|---|
 | `superwhisper` | [Superwhisper for Linux](https://superwhisper.com) (unofficial repackage of the release archive) | automatic, from `https://tux.superwhisper.com/stable.json` |
+| `clankerwatch` | [clankerwatch](https://github.com/nicholas-fedor/clankerwatch), Claude Code usage in the KDE Plasma panel (built from source) | automatic, from upstream's latest GitHub release |
 
 ## Install
 
 ```sh
 sudo dnf config-manager addrepo --from-repofile=https://vintoware.github.io/vintoware-rpm/vintoware.repo
-sudo dnf install superwhisper
+sudo dnf install superwhisper   # and/or clankerwatch
 ```
 
 Packages and repository metadata are GPG-signed (`gpgcheck=1`, `repo_gpgcheck=1`), and
@@ -47,7 +48,8 @@ Create `packages/<name>/` containing:
   sets `ExclusiveArch`. `BuildArch: noarch` builds once.
 - optionally, an executable `update` that rewrites the spec when upstream has a new
   version. It must exit non-zero if it can't verify what it downloaded. See
-  `packages/superwhisper/update`.
+  `packages/superwhisper/update`. The check job has `minisign` and `cosign` available,
+  and `GITHUB_TOKEN` set for GitHub API calls.
 
 To ship a packaging-only change, bump `Release:` and push.
 
@@ -74,6 +76,22 @@ To ship a packaging-only change, bump `Release:` and push.
 
 Superwhisper itself is proprietary software by Super Ultra, Inc. This repository holds
 only the packaging, under the MIT license below.
+
+## clankerwatch notes
+
+- Built from upstream's release source archive (`clankerwatch.src.tar.gz`) as a static Go
+  binary. Installs the daemon, its systemd user unit, the D-Bus activation file and the
+  Plasma widget (`com.nickfedor.clankerwatch`). Then add **Clanker Watch** from the
+  panel's **Add Widgets**. D-Bus starts the daemon when the widget loads, so there's
+  nothing to enable. Running daemons restart after a dnf upgrade. Widget QML changes
+  appear after a plasmashell restart (`systemctl --user restart plasma-plasmashell`).
+- Settings go in `~/.config/clankerwatch/config.yaml`. The example is at
+  `/usr/share/doc/clankerwatch/config.example.yaml`.
+- `update` verifies each release's `checksums.txt` Sigstore bundle with cosign. The
+  certificate must come from a GitHub Actions workflow in `nicholas-fedor/clankerwatch`
+  running for that exact tag. The source archive's SHA-256 must match the signed
+  checksums, and the build checks the SHA-256 again. Go modules are checked against
+  `go.sum` and the Go checksum database.
 
 ## Maintenance
 
