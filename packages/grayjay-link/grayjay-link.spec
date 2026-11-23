@@ -66,12 +66,16 @@ find %{buildroot}%{_datadir}/plasma/plasmoids/%{applet_id} -type d -exec chmod 0
 
 install -Dm 0644 plasmoid/contents/icons/grayjay-link.svg \
   %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/grayjay-link.svg
-sed 's|@BIN@|%{_bindir}/grayjay-link|' data/grayjay-link-handler.desktop.in > grayjay-link-handler.desktop
-desktop-file-install --dir=%{buildroot}%{_datadir}/applications grayjay-link-handler.desktop
+# grayjay-link: URL handler, and (from 0.4.0) the opt-in link dispatcher.
+for template in data/grayjay-link-*.desktop.in; do
+  name=$(basename "$template" .in)
+  sed 's|@BIN@|%{_bindir}/grayjay-link|' "$template" > "$name"
+  desktop-file-install --dir=%{buildroot}%{_datadir}/applications "$name"
+done
 
 %check
 python3 -m unittest
-desktop-file-validate %{buildroot}%{_datadir}/applications/grayjay-link-handler.desktop
+desktop-file-validate %{buildroot}%{_datadir}/applications/grayjay-link-*.desktop
 PYTHONPATH=%{buildroot}%{python3_sitelib} python3 -P -m grayjay_link --version | grep -F %{version}
 
 %files
@@ -81,7 +85,7 @@ PYTHONPATH=%{buildroot}%{python3_sitelib} python3 -P -m grayjay_link --version |
 %{python3_sitelib}/grayjay_link/
 %{_datadir}/plasma/plasmoids/%{applet_id}/
 %{_datadir}/icons/hicolor/scalable/apps/grayjay-link.svg
-%{_datadir}/applications/grayjay-link-handler.desktop
+%{_datadir}/applications/grayjay-link-*.desktop
 
 %changelog
 * Mon Nov 23 2026 vintoware-rpm bot <noreply@github.com> - 0.3.1-1
