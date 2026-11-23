@@ -7,12 +7,13 @@ RPMs, then publishes them on GitHub Pages at <https://vintoware.github.io/vintow
 |---|---|---|
 | `superwhisper` | [Superwhisper for Linux](https://superwhisper.com) (unofficial repackage of the release archive) | automatic, from `https://tux.superwhisper.com/stable.json` |
 | `clankerwatch` | [clankerwatch](https://github.com/nicholas-fedor/clankerwatch), Claude Code usage in the KDE Plasma panel (built from source) | automatic, from upstream's latest GitHub release |
+| `grayjay-link` | [grayjay-link](https://github.com/vintoware/grayjay-link), open links in Grayjay Desktop from the KDE Plasma panel and Firefox | triggered by grayjay-link's release workflow; also from its latest GitHub release |
 
 ## Install
 
 ```sh
 sudo dnf config-manager addrepo --from-repofile=https://vintoware.github.io/vintoware-rpm/vintoware.repo
-sudo dnf install superwhisper   # and/or clankerwatch
+sudo dnf install superwhisper   # and/or clankerwatch, grayjay-link
 ```
 
 Packages and repository metadata are GPG-signed (`gpgcheck=1`, `repo_gpgcheck=1`), and
@@ -92,6 +93,20 @@ only the packaging, under the MIT license below.
   running for that exact tag. The source archive's SHA-256 must match the signed
   checksums, and the build checks the SHA-256 again. Go modules are checked against
   `go.sum` and the Go checksum database.
+
+## grayjay-link notes
+
+- Pure Python (noarch). Installs `/usr/bin/grayjay-link`, the Plasma widget
+  (`com.vintoware.grayjaylink`), its icon and the `grayjay-link:` URL handler. Add
+  **Grayjay Link** from the panel's **Add Widgets**: the background helper runs while the
+  widget exists, so there's no service to enable. Grayjay itself comes from Flathub.
+- Releases trigger builds directly: grayjay-link's `release.yml` runs `packages/grayjay-link/update`
+  and pushes the spec bump with a write deploy key ("grayjay-link release workflow"). The
+  scheduled check covers any missed trigger.
+- `update` verifies the release's `checksums.txt` Sigstore bundle with cosign. The
+  certificate must come from grayjay-link's `release.yml` on `main`, for the exact commit the
+  release tag points to. The source archive's SHA-256 must match the signed checksums, and
+  the build checks the SHA-256 again and runs the test suite.
 
 ## Maintenance
 
