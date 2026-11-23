@@ -9,6 +9,11 @@
 %global bus_name com.nickfedor.ClankerWatch1
 %global applet_id com.nickfedor.clankerwatch
 
+# Don't clamp file mtimes to the changelog date. Qt's QML disk cache treats a
+# source file as unchanged when its mtime is unchanged, so two releases built on
+# the same day would leave plasmashell running the previous widget's cached QML.
+%global clamp_mtime_to_source_date_epoch 0
+
 # Static Go binary stripped like upstream's (-s -w): nothing for debuginfo.
 %global debug_package %{nil}
 
