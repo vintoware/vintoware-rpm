@@ -8,12 +8,13 @@ RPMs, then publishes them on GitHub Pages at <https://vintoware.github.io/vintow
 | `superwhisper` | [Superwhisper for Linux](https://superwhisper.com) (unofficial repackage of the release archive) | automatic, from `https://tux.superwhisper.com/stable.json` |
 | `clankerwatch` | [clankerwatch](https://github.com/nicholas-fedor/clankerwatch), Claude Code usage in the KDE Plasma panel (built from source) | automatic, from upstream's latest GitHub release |
 | `grayjay-link` | [grayjay-link](https://github.com/vintoware/grayjay-link), open links in Grayjay Desktop from the KDE Plasma panel and Firefox | triggered by grayjay-link's release workflow; also from its latest GitHub release |
+| `xcodegen` | [XcodeGen](https://github.com/yonaskolb/XcodeGen), generate Xcode projects from a `project.yml` spec (built from source) | automatic, from upstream's latest GitHub release |
 
 ## Install
 
 ```sh
 sudo dnf config-manager addrepo --from-repofile=https://vintoware.github.io/vintoware-rpm/vintoware.repo
-sudo dnf install superwhisper   # and/or clankerwatch, grayjay-link
+sudo dnf install superwhisper   # and/or clankerwatch, grayjay-link, xcodegen
 ```
 
 Packages and repository metadata are GPG-signed (`gpgcheck=1`, `repo_gpgcheck=1`), and
@@ -107,6 +108,28 @@ only the packaging, under the MIT license below.
   certificate must come from grayjay-link's `release.yml` on `main`, for the exact commit the
   release tag points to. The source archive's SHA-256 must match the signed checksums, and
   the build checks the SHA-256 again and runs the test suite.
+
+## xcodegen notes
+
+- Built from source with Fedora's `swift-lang`. Installs `/usr/bin/xcodegen` and its
+  presets in `/usr/share/xcodegen`. It generates `.xcodeproj` bundles; building them
+  still needs Xcode on a Mac.
+- The Swift runtime libraries xcodegen loads (about 80 MB, mostly ICU) are bundled in
+  `/usr/lib64/xcodegen`, which the binary finds through its rpath. Swift has no stable ABI
+  on Linux, and Fedora's `swift-lang-runtime` uses unversioned sonames in `/usr/lib64`, so
+  linking against it would break on the next Fedora Swift update. Fedora's toolchain
+  can't link the runtime statically. The package doesn't depend on `swift-lang-runtime`,
+  and installing that package doesn't affect it.
+- Linked with lld (ld.bfd puts this binary in one writable and executable segment), with
+  full RELRO. `%check` fails the build if a writable and executable segment comes back.
+- Upstream publishes no signed release artifacts. `update` resolves the release tag to
+  its commit, requires GitHub to report that commit's signature as verified and the
+  commit to be on upstream's default branch, and checks that the source archive for that
+  commit reports the release's version. It pins the commit and the archive's SHA-256 in
+  the spec, and the build checks the SHA-256 again. Swift dependencies are cloned at the
+  git revisions pinned in upstream's `Package.resolved` (`--force-resolved-versions`).
+- `%check` generates an iOS project from a minimal spec, with the source tree's presets
+  moved aside, so a build only passes if the installed presets are found and applied.
 
 ## Maintenance
 

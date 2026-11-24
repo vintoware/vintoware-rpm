@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Bump xcodegen.spec to upstream's latest GitHub release.
+
+Package update hook: run from any directory; paths default to this package's
+directory. The repository workflow runs every packages/*/update.
+
+Asks the GitHub API for yonaskolb/XcodeGen's latest release. Upstream publishes
+no signed release artifacts (its release assets are macOS binaries anyway), so
+when the release tag is newer than the spec's Version this hook:
+
+- resolves the tag to its commit and requires GitHub to report that commit's
+  signature as verified;
+- requires the commit to be on upstream's default branch;
+- downloads the source archive for that commit (by SHA, not by tag), checks
+  that Sources/XcodeGen/main.swift reports the tag's version and that
+  Package.resolved (which pins every dependency's git revision) is present;
+
+and only then rewrites the spec (Version, commit, src_sha256, Release reset to
+1, a new %changelog entry). The build checks the archive's SHA-256 again.
+
+Uses $GITHUB_TOKEN / $GH_TOKEN for the API when set. Exits non-zero on any
+verification failure, leaving the spec untouched.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+REPO = "yonaskolb/XcodeGen"
+API = f"https://api.github.com/repos/{REPO}"
+ARCHIVE = f"https://github.com/{REPO}/archive"
+USER_AGENT = "vintoware-rpm-update-check"
+CHANGELOG_AUTHOR = "vintoware-rpm bot <noreply@github.com>"
+MAX_ARCHIVE = 64 << 20
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def fetch(url, dest=None, api=False):
+    headers = {"User-Agent": USER_AGENT}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if api:
+        headers["Accept"] = "application/vnd.github+json"
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=120) as response:
+        if dest is None:
+            return response.read()
+        size = 0
+        with open(dest, "wb") as out:
+            while chunk := response.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_ARCHIVE:
+                    raise SystemExit(f"{url}: larger than {MAX_ARCHIVE} bytes")
+                out.write(chunk)
+    return None
+
+
+def api(path=""):
+    return json.loads(fetch(f"{API}/{path}".rstrip("/"), api=True))
+
+
+def version_key(version):
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise SystemExit(f"unexpected version format: {version!r}")
+    return tuple(int(part) for part in version.split("."))
+
+
+def spec_field(spec, pattern, what):
+    match = re.search(pattern, spec, re.M)
+    if not match:
+        raise SystemExit(f"spec has no {what}")
+    return match.group(1)
+
+
+def set_global(spec, name, value):
+    new, count = re.subn(rf"^(%global {name} )\S+$", lambda m: m.group(1) + value, spec, count=1, flags=re.M)
+    if count != 1:
+        raise SystemExit(f"spec has no %global {name}")
+    return new
+
+
+def tag_commit(tag):
+    ref = api(f"git/ref/tags/{tag}")["object"]
+    # Annotated tags point at a tag object; follow it to the commit.
+    for _ in range(4):
+        if ref["type"] == "commit":
+            break
+        if ref["type"] != "tag":
+            raise SystemExit(f"tag {tag} points at a {ref['type']}")
+        ref = api(f"git/tags/{ref['sha']}")["object"]
+    sha = ref["sha"]
+    if ref["type"] != "commit" or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise SystemExit(f"cannot resolve tag {tag} to a commit")
+    return sha
+
+
+def verify_commit(tag, sha):
+    verification = api(f"git/commits/{sha}")["verification"]
+    if not verification.get("verified"):
+        raise SystemExit(f"commit {sha} ({tag}): signature not verified ({verification.get('reason')})")
+    print(f"commit {sha}: signature verified by GitHub", flush=True)
+
+    branch = api()["default_branch"]
+    status = api(f"compare/{sha}...{branch}")["status"]
+    if status not in ("ahead", "identical"):
+        raise SystemExit(f"commit {sha} ({tag}) is not on {branch} (compare: {status})")
+    print(f"commit {sha}: on {branch}", flush=True)
+
+
+def verify_archive(sha, version, workdir):
+    path = os.path.join(workdir, "src.tar.gz")
+    print(f"downloading {ARCHIVE}/{sha}.tar.gz", flush=True)
+    fetch(f"{ARCHIVE}/{sha}.tar.gz", path)
+
+    prefix = f"XcodeGen-{sha}/"
+    with tarfile.open(path, "r:gz") as tar:
+        names = set(tar.getnames())
+        if not all(name == prefix.rstrip("/") or name.startswith(prefix) for name in names):
+            raise SystemExit(f"archive has entries outside {prefix}")
+        for required in ("Package.swift", "Package.resolved", "Sources/XcodeGen/main.swift"):
+            if prefix + required not in names:
+                raise SystemExit(f"archive has no {required}")
+        main = tar.extractfile(prefix + "Sources/XcodeGen/main.swift").read().decode()
+    if f'Version("{version}")' not in main:
+        raise SystemExit(f"Sources/XcodeGen/main.swift does not report version {version}")
+    print(f"archive: reports version {version}", flush=True)
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--spec", default=os.path.join(HERE, "xcodegen.spec"))
+    args = parser.parse_args()
+
+    with open(args.spec) as f:
+        spec = f.read()
+    current = spec_field(spec, r"^Version:\s+(\S+)$", "Version")
+
+    tag = api("releases/latest")["tag_name"]
+    if not re.fullmatch(r"\d+\.\d+\.\d+", tag):
+        raise SystemExit(f"unexpected release tag: {tag!r}")
+    latest = tag
+    print(f"spec: {current}  latest release: {latest}")
+
+    if version_key(latest) > version_key(current):
+        commit = tag_commit(tag)
+        verify_commit(tag, commit)
+        with tempfile.TemporaryDirectory() as workdir:
+            src_sha256 = verify_archive(commit, latest, workdir)
+
+        spec = re.sub(r"^(Version:\s+)\S+$", rf"\g<1>{latest}", spec, count=1, flags=re.M)
+        spec = re.sub(r"^(Release:\s+)\S+$", r"\g<1>1", spec, count=1, flags=re.M)
+        spec = set_global(spec, "commit", commit)
+        spec = set_global(spec, "src_sha256", src_sha256)
+
+        date = datetime.datetime.now(datetime.timezone.utc).strftime("%a %b %d %Y")
+        entry = (f"* {date} {CHANGELOG_AUTHOR} - {latest}-1\n- Update to {latest}\n"
+                 f"- Release notes: https://github.com/{REPO}/releases/tag/{tag}\n")
+        spec = spec.replace("%changelog\n", f"%changelog\n{entry}\n", 1)
+
+        with open(args.spec, "w") as f:
+            f.write(spec)
+        print(f"spec updated to {latest}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
