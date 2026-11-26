@@ -4,8 +4,8 @@
 # archive's SHA-256, which %%prep checks again. The upstream values below are
 # rewritten by ./update -- edit by hand only for packaging fixes (and bump
 # Release when you do).
-%global commit 62a1f685b231c0cd8633a658f481059bb9ed0641
-%global src_sha256 6a05408893643d05b8e6fc0f474def5f2bc48614b3bda4b48a1c1c605aa12b20
+%global commit 45ad520d50c26f42b0f4e823e8dd5e18e3ae27c9
+%global src_sha256 abe5a9d0a79b4a3fd42281a485cf76704e69a78229b2873e557f55782641b1d7
 
 # Swift has no stable ABI on Linux, and Fedora's swift-lang-runtime installs
 # its libraries in %%{_libdir} with unversioned sonames, so a later swift-lang
@@ -24,7 +24,7 @@
 %global toolchain clang
 
 Name:           xcodegen
-Version:        2.48.0
+Version:        2.49.0
 Release:        1
 Summary:        Generate Xcode projects from a YAML or JSON project spec
 # XcodeGen is MIT. Statically linked: AEXML, JSONUtilities, Rainbow, SwiftCLI,
@@ -160,6 +160,10 @@ rm -rf "$work"
 %{_datadir}/xcodegen
 
 %changelog
+* Thu Nov 26 2026 vintoware-rpm bot <noreply@github.com> - 2.49.0-1
+- Update to 2.49.0
+- Release notes: https://github.com/yonaskolb/XcodeGen/releases/tag/2.49.0
+
 * Tue Nov 24 2026 vintoware-rpm bot <noreply@github.com> - 2.48.0-1
 - Initial package of XcodeGen 2.48.0
 - Release notes: https://github.com/yonaskolb/XcodeGen/releases/tag/2.48.0
